@@ -1,6 +1,6 @@
 """
 Local test harness -- exercises run_python(), extract_json_object(), and the
-logging pipeline without needing a Telegram token or an Anthropic API key.
+logging pipeline without needing a Telegram token or a Groq API key.
 """
 
 import json
@@ -70,12 +70,24 @@ def test_json_extraction_no_json():
 
 def test_end_to_end_stub_pipeline(tmp_log_path):
     bot.GIT_PUSH_ENABLED = False  # don't try to push during a local test
-    with open(tmp_log_path, "w", encoding="utf-8") as fh:
-        reply = bot.process_one_message(
-            "What is 2+2? Reply with ONLY this JSON: {\"answer\": <int>, \"log_url\": \"<url>\"}",
-            "https://example.com/run.jsonl",
-            fh,
-        )
+
+    # Force the stub LLM path regardless of what's exported in the shell.
+    # Without this, a real GROQ_API_KEY sitting in the environment (e.g. from
+    # `export $(grep -v '^#' .env | xargs)`) would silently switch solve()
+    # over to call_llm_real(), and this test's expected step sequence -- which
+    # is specific to the deterministic stub -- would no longer match.
+    original_key = bot.GROQ_API_KEY
+    bot.GROQ_API_KEY = None
+    try:
+        with open(tmp_log_path, "w", encoding="utf-8") as fh:
+            reply = bot.process_one_message(
+                "What is 2+2? Reply with ONLY this JSON: {\"answer\": <int>, \"log_url\": \"<url>\"}",
+                "https://example.com/run.jsonl",
+                fh,
+            )
+    finally:
+        bot.GROQ_API_KEY = original_key
+
     parsed = json.loads(reply)
     assert "answer" in parsed and "log_url" in parsed
     assert parsed["log_url"] == "https://example.com/run.jsonl"

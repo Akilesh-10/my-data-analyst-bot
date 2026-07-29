@@ -16,7 +16,7 @@ Env vars required:
   TELEGRAM_BOT_TOKEN     - from @BotFather
   RUN_LOG_PUBLIC_URL     - the URL you'll report as log_url, e.g.
                            https://raw.githubusercontent.com/you/repo/main/run.jsonl
-  ANTHROPIC_API_KEY      - optional; falls back to a deterministic stub if unset
+  GROQ_API_KEY           - optional; falls back to a deterministic stub if unset
   GIT_PUSH_ENABLED       - "1" (default) or "0" to disable auto-push (e.g. for local testing)
 """
 
@@ -32,11 +32,13 @@ from datetime import datetime, timezone
 import requests
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 LOG_PATH = os.environ.get("RUN_LOG_PATH", "run.jsonl")
 GIT_PUSH_ENABLED = os.environ.get("GIT_PUSH_ENABLED", "1") == "1"
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 MAX_TOOL_ITERS = 8
 CODE_TIMEOUT_SECONDS = 25
@@ -58,19 +60,23 @@ markdown code fences, no explanation before or after it. Fill any "log_url"
 field with exactly this URL: {log_url}
 """
 
+# OpenAI-style (Groq-compatible) tool/function schema
 TOOLS = [
     {
-        "name": "python_exec",
-        "description": (
-            "Execute a Python snippet in a fresh subprocess. Has requests, "
-            "pandas as pd, numpy as np, json, re, io, math, datetime "
-            "available. Use print() for anything you need to see -- only "
-            "stdout/stderr is returned to you. Timeout: 25s per call."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"code": {"type": "string", "description": "Python code to execute"}},
-            "required": ["code"],
+        "type": "function",
+        "function": {
+            "name": "python_exec",
+            "description": (
+                "Execute a Python snippet in a fresh subprocess. Has requests, "
+                "pandas as pd, numpy as np, json, re, io, math, datetime "
+                "available. Use print() for anything you need to see -- only "
+                "stdout/stderr is returned to you. Timeout: 25s per call."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"code": {"type": "string", "description": "Python code to execute"}},
+                "required": ["code"],
+            },
         },
     }
 ]
@@ -131,38 +137,68 @@ def git_push_log():
 # ------------------------------------------------------------------- LLM --
 
 def call_llm_real(question_text, log_url, log_fh):
-    """Real Anthropic-backed agent loop with tool use. Requires ANTHROPIC_API_KEY."""
-    import anthropic  # pip install anthropic
+    """Real Groq-backed agent loop with tool use. Requires GROQ_API_KEY.
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    Groq's /chat/completions endpoint is OpenAI-compatible: system prompt is
+    a normal message with role "system", tool calls come back on
+    message["tool_calls"], and tool results are sent back as role "tool"
+    messages keyed by tool_call_id.
+    """
     system = SYSTEM_PROMPT.format(log_url=log_url)
-    convo = [{"role": "user", "content": question_text}]
+    convo = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": question_text},
+    ]
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
     for _ in range(MAX_TOOL_ITERS):
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2000,
-            system=system,
-            messages=convo,
-            tools=TOOLS,
+        resp = requests.post(
+            GROQ_API_URL,
+            headers=headers,
+            json={
+                "model": GROQ_MODEL,
+                "messages": convo,
+                "tools": TOOLS,
+                "max_tokens": 2000,
+            },
+            timeout=60,
         )
-        tool_uses = [b for b in resp.content if b.type == "tool_use"]
-        text_blocks = [b.text for b in resp.content if b.type == "text"]
+        resp.raise_for_status()
+        data = resp.json()
+        message = data["choices"][0]["message"]
+        tool_calls = message.get("tool_calls") or []
 
-        if not tool_uses:
-            final_text = "\n".join(text_blocks).strip()
+        if not tool_calls:
+            final_text = (message.get("content") or "").strip()
             log_event(log_fh, {"step": "final_response", "text": final_text})
             return final_text
 
-        convo.append({"role": "assistant", "content": resp.content})
-        tool_results = []
-        for tu in tool_uses:
-            code = tu.input.get("code", "")
-            log_event(log_fh, {"step": "tool_call", "tool": tu.name, "code": code})
+        # Append the assistant turn (including the raw tool_calls) so the
+        # model sees its own request on the next round.
+        convo.append({
+            "role": "assistant",
+            "content": message.get("content"),
+            "tool_calls": tool_calls,
+        })
+
+        for tc in tool_calls:
+            fn = tc["function"]
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            code = args.get("code", "")
+            log_event(log_fh, {"step": "tool_call", "tool": fn.get("name"), "code": code})
             output = run_python(code)
-            log_event(log_fh, {"step": "tool_result", "tool": tu.name, "output": output})
-            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": output})
-        convo.append({"role": "user", "content": tool_results})
+            log_event(log_fh, {"step": "tool_result", "tool": fn.get("name"), "output": output})
+            convo.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": output,
+            })
 
     log_event(log_fh, {"step": "max_iterations_reached"})
     return None
@@ -186,7 +222,7 @@ def call_llm_STUB(question_text, log_url, log_fh):
 
 
 def solve(question_text, log_url, log_fh):
-    if ANTHROPIC_API_KEY:
+    if GROQ_API_KEY:
         return call_llm_real(question_text, log_url, log_fh)
     return call_llm_STUB(question_text, log_url, log_fh)
 
