@@ -18,3 +18,8 @@
 {"step": "message_received", "text": "/start", "timestamp": "2026-07-29T10:24:57.983590+00:00"}
 {"step": "final_response", "text": "{\"status\": \"started\", \"message\": \"Hello, I'm ready to help you with your data analysis question. What would you like to know?\"}", "timestamp": "2026-07-29T10:24:59.012804+00:00"}
 {"step": "message_sent", "text": "{\"status\": \"started\", \"message\": \"Hello, I'm ready to help you with your data analysis question. What would you like to know?\"}", "timestamp": "2026-07-29T10:24:59.017961+00:00"}
+{"step": "message_received", "text": "What is 25 + 17? Reply with ONLY this JSON: {\"answer\": <int>, \"log_url\": \"<url>\"}", "timestamp": "2026-07-29T10:25:25.335073+00:00"}
+{"step": "tool_call", "tool": "python_exec", "code": "print(25 + 17)", "timestamp": "2026-07-29T10:25:28.313613+00:00"}
+{"step": "tool_result", "tool": "python_exec", "output": "42\n", "timestamp": "2026-07-29T10:25:29.792298+00:00"}
+{"step": "final_response", "text": "{\"answer\": 42, \"log_url\": \"https://raw.githubusercontent.com/Akilesh-10/my-data-analyst-bot/main/run.jsonl\"}", "timestamp": "2026-07-29T10:25:30.564683+00:00"}
+{"step": "message_sent", "text": "{\"answer\": 42, \"log_url\": \"https://raw.githubusercontent.com/Akilesh-10/my-data-analyst-bot/main/run.jsonl\"}", "timestamp": "2026-07-29T10:25:30.566529+00:00"}
