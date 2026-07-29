@@ -1,1 +1,3 @@
-
+{"step": "message_received", "text": "/start", "timestamp": "2026-07-29T10:46:28.720886+00:00"}
+{"step": "final_response", "text": "{\"status\": \"OK\"}", "timestamp": "2026-07-29T10:46:29.389493+00:00"}
+{"step": "message_sent", "text": "{\"status\": \"OK\"}", "timestamp": "2026-07-29T10:46:29.392526+00:00"}
